@@ -1,0 +1,6 @@
+PyQt6>=6.4
+mutagen
+python-mpv
+jeepney
+zeroconf
+cryptography

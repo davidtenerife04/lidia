@@ -1,0 +1,23 @@
+singleton Theme 1.0 Theme.qml
+Icon 1.0 Icon.qml
+IconButton 1.0 IconButton.qml
+PillButton 1.0 PillButton.qml
+NavItem 1.0 NavItem.qml
+CoverArt 1.0 CoverArt.qml
+EqBars 1.0 EqBars.qml
+StyledSlider 1.0 StyledSlider.qml
+StyledScrollBar 1.0 StyledScrollBar.qml
+NamePopup 1.0 NamePopup.qml
+EditTagsPopup 1.0 EditTagsPopup.qml
+EqualizerPopup 1.0 EqualizerPopup.qml
+StyledMenu 1.0 StyledMenu.qml
+StyledMenuItem 1.0 StyledMenuItem.qml
+SettingsPopup 1.0 SettingsPopup.qml
+SideBar 1.0 SideBar.qml
+HeaderBar 1.0 HeaderBar.qml
+SongsView 1.0 SongsView.qml
+AlbumsView 1.0 AlbumsView.qml
+ArtistsView 1.0 ArtistsView.qml
+LyricsPanel 1.0 LyricsPanel.qml
+QueuePanel 1.0 QueuePanel.qml
+PlayerBar 1.0 PlayerBar.qml

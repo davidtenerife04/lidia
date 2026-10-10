@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Lidia
+Comment=Reproductor de música local
+Exec=python3 /home/jdavid/Documentos/Lidia/main.py
+Icon=/home/jdavid/Documentos/Lidia/ui/logo-256.png
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupWMClass=lidia

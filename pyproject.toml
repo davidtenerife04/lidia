@@ -1,0 +1,11 @@
+[project]
+name = "lidia"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["PyQt6>=6.4", "mutagen", "python-mpv", "jeepney", "zeroconf", "cryptography"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
