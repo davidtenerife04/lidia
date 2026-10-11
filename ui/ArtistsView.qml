@@ -28,6 +28,7 @@ Item {
             required property string name
             required property int albumCount
             required property int trackCount
+            required property string image
 
             width: artistGrid.cellWidth
             height: artistGrid.cellHeight
@@ -36,8 +37,7 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 6
                 radius: 14
-                color: artistMouse.containsMouse ? Theme.elevated : "transparent"
-                Behavior on color { ColorAnimation { duration: 140 } }
+                color: artistHover.hovered ? Theme.elevated : "transparent"
             }
 
             Column {
@@ -45,21 +45,33 @@ Item {
                 anchors.margins: 16
                 spacing: 10
 
-                Rectangle {
+                Item {
                     width: parent.width
                     height: width
-                    radius: 12
-                    gradient: Gradient {
-                        orientation: Gradient.Horizontal
-                        GradientStop { position: 0.0; color: Theme.elevated }
-                        GradientStop { position: 1.0; color: Theme.surface }
+
+                    CoverArt {
+                        anchors.fill: parent
+                        radiusRatio: 0.5
+                        decodeSize: 360
+                        source: artistCard.image
+                        visible: artistCard.image !== ""
                     }
-                    Icon {
-                        anchors.centerIn: parent
-                        width: parent.width * 0.36
-                        height: width
-                        name: "artist"
-                        color: Theme.textTertiary
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: width / 2
+                        visible: artistCard.image === ""
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop { position: 0.0; color: Theme.elevated }
+                            GradientStop { position: 1.0; color: Theme.surface }
+                        }
+                        Icon {
+                            anchors.centerIn: parent
+                            width: parent.width * 0.36
+                            height: width
+                            name: "artist"
+                            color: Theme.textTertiary
+                        }
                     }
                 }
 
@@ -85,13 +97,12 @@ Item {
                 }
             }
 
-            MouseArea {
-                id: artistMouse
-                anchors.fill: parent
-                hoverEnabled: true
+            HoverHandler {
+                id: artistHover
                 cursorShape: Qt.PointingHandCursor
-                z: -1
-                onClicked: root.openArtist(artistCard.artistId, artistCard.name)
+            }
+            TapHandler {
+                onTapped: root.openArtist(artistCard.artistId, artistCard.name)
             }
         }
     }

@@ -2,6 +2,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+from core.logger import logger
+
 DB_DIR = Path.home() / ".local" / "share" / "lidia"
 DB_PATH = DB_DIR / "library.db"
 
@@ -61,7 +63,42 @@ def _migration_2(cursor):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_playlist_tracks_track ON playlist_tracks(track_id);")
 
 
-MIGRATIONS = [_migration_1, _migration_2]
+def _migration_3(cursor):
+    _add_column(cursor, "tracks", "bitrate", "INTEGER NOT NULL DEFAULT 0")
+    _add_column(cursor, "tracks", "format", "TEXT NOT NULL DEFAULT ''")
+
+
+_NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+
+
+def _migration_4(cursor):
+    """Seguimiento de cambios en favoritos y listas para la sincronización."""
+    _add_column(cursor, "favorites", "updated_at", "TEXT")
+    cursor.execute(f"UPDATE favorites SET updated_at = {_NOW} WHERE updated_at IS NULL")
+    cursor.execute(f"""
+    CREATE TRIGGER IF NOT EXISTS trg_favorites_ins AFTER INSERT ON favorites
+    BEGIN
+        UPDATE favorites SET updated_at = {_NOW} WHERE track_id = NEW.track_id;
+        DELETE FROM tombstones WHERE kind = 'favorite'
+            AND uid = (SELECT uid FROM tracks WHERE id = NEW.track_id);
+    END""")
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS trg_favorites_del AFTER DELETE ON favorites
+    BEGIN
+        INSERT OR REPLACE INTO tombstones (kind, uid)
+            SELECT 'favorite', uid FROM tracks WHERE id = OLD.track_id;
+    END""")
+    cursor.execute("CREATE TABLE IF NOT EXISTS sync_events (id TEXT PRIMARY KEY, "
+                   "at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+    for event, row in (("INSERT", "NEW"), ("DELETE", "OLD")):
+        cursor.execute(f"""
+        CREATE TRIGGER IF NOT EXISTS trg_playlist_tracks_{event.lower()}_ts AFTER {event} ON playlist_tracks
+        BEGIN
+            UPDATE playlists SET updated_at = {_NOW} WHERE id = {row}.playlist_id;
+        END""")
+
+
+MIGRATIONS = [_migration_1, _migration_2, _migration_3, _migration_4]
 
 
 def _migrate(conn):
@@ -170,4 +207,4 @@ def init_db():
 
 if __name__ == "__main__":
     init_db()
-    print(f"Base de datos inicializada en: {DB_PATH}")
+    logger.info("Base de datos inicializada en: %s", DB_PATH)

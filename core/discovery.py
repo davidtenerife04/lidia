@@ -5,6 +5,8 @@ El PIN no se publica nunca.
 """
 import socket
 
+from core.logger import logger
+
 try:
     from zeroconf import ServiceInfo, Zeroconf
 except ImportError:
@@ -38,7 +40,7 @@ class Announcer:
             self._zc.register_service(self._info)
             return True
         except Exception as e:
-            print(f"No se pudo anunciar el servicio mDNS: {e}")
+            logger.warning("No se pudo anunciar el servicio mDNS", exc_info=True)
             self.stop()
             return False
 

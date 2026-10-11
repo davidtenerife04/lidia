@@ -3,6 +3,8 @@ import time
 
 import mpv
 
+from core.logger import logger
+
 EQ_FREQUENCIES = (31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
 FADE_STEP = 0.05
 
@@ -108,7 +110,7 @@ class AudioPlayer:
                 self._preloaded = None
         except Exception as e:
             self._preloaded = None
-            print(f"Error precargando la siguiente pista: {e}")
+            logger.warning("Error precargando la siguiente pista", exc_info=True)
 
     def clear_preload(self):
         self.preload(None)
@@ -147,7 +149,7 @@ class AudioPlayer:
             new.play(filepath)
             new.pause = False
         except Exception as e:
-            print(f"Error iniciando el crossfade: {e}")
+            logger.warning("Error iniciando el crossfade", exc_info=True)
             return
         if self.on_auto_advance:
             self.on_auto_advance()
@@ -202,7 +204,7 @@ class AudioPlayer:
             try:
                 p.replaygain = self._replaygain
             except Exception as e:
-                print(f"Error cambiando ReplayGain: {e}")
+                logger.warning("Error cambiando ReplayGain", exc_info=True)
 
     def play(self, filepath, start=0.0, paused=False):
         self._preloaded = None
@@ -252,7 +254,7 @@ class AudioPlayer:
             try:
                 p.af = self._af
             except Exception as e:
-                print(f"Error aplicando el ecualizador: {e}")
+                logger.warning("Error aplicando el ecualizador", exc_info=True)
 
     def seek(self, seconds, absolute=True):
         try:

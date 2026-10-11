@@ -2,7 +2,9 @@ import locale
 import os
 import socket
 import ssl
+import tempfile
 import random
+import shutil
 import sys
 from pathlib import Path
 
@@ -15,6 +17,8 @@ from PyQt6.QtQml import QQmlApplicationEngine
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMenu, QSystemTrayIcon
 
+from core.artist_images import fetch_photo
+from core.logger import logger
 from core.control import PlayerController
 from core.control_qt import ThreadedController
 from core.discovery import Announcer
@@ -25,7 +29,8 @@ from core.favorites import FavoritesService
 from core.lyrics import load_lyrics
 from core.models import (AlbumModel, ArtistModel, PlaylistModel, QueueModel, known_artists, split_artists,
                          TrackModel, fetch_tracks, fetch_tracks_by_ids, fetch_tracks_by_paths)
-from core.server import LidiaServer
+from core import audiolab, sync
+from core.server import LidiaServer, Limits
 from core.player import AudioPlayer
 from core.metadata import TagError, edit_tags
 from core.playback import REPEAT_ALL, REPEAT_OFF, REPEAT_ONE, choose_next
@@ -68,10 +73,44 @@ class ScannerThread(QThread):
                     progress=lambda n, base=base: self.progress.emit(base + n),
                     should_stop=self.isInterruptionRequested)
         except Exception as e:
-            print(f"Error durante el escaneo: {e}")
+            logger.exception("Error durante el escaneo")
         finally:
             conn.close()
             self.finished_scan.emit()
+
+
+class LabThread(QThread):
+    done = pyqtSignal(str, object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, kind, fn, parent=None):
+        super().__init__(parent)
+        self.kind = kind
+        self.fn = fn
+
+    def run(self):
+        try:
+            self.done.emit(self.kind, self.fn())
+        except audiolab.LabError as e:
+            self.failed.emit(str(e))
+        except Exception as e:
+            self.failed.emit(f"Error inesperado: {e}")
+
+
+class ArtistPhotoThread(QThread):
+    photo = pyqtSignal(str, str)
+
+    def __init__(self, names, parent=None):
+        super().__init__(parent)
+        self.names = names
+
+    def run(self):
+        for name in self.names:
+            if self.isInterruptionRequested():
+                return
+            path = fetch_photo(name)
+            if path:
+                self.photo.emit(name, path)
 
 
 class PlayerBackend(QObject):
@@ -89,6 +128,11 @@ class PlayerBackend(QObject):
     message = pyqtSignal(str, arguments=['text'])
     sortChanged = pyqtSignal(str, arguments=['sort'])
     sleepRemainingChanged = pyqtSignal()
+    labBusyChanged = pyqtSignal(bool, arguments=['busy'])
+    labAnalyzed = pyqtSignal('QVariant', 'QVariantList', arguments=['info', 'peaks'])
+    labPreviewReady = pyqtSignal(str, 'QVariantList', arguments=['path', 'peaks'])
+    labFailed = pyqtSignal(str, arguments=['text'])
+    labExported = pyqtSignal(str, arguments=['text'])
 
     # --- señales internas (vienen del hilo de mpv) ---
     _timeSig = pyqtSignal(float)
@@ -96,6 +140,8 @@ class PlayerBackend(QObject):
     _playingSig = pyqtSignal(bool)
     _endedSig = pyqtSignal()
     _autoAdvanceSig = pyqtSignal()
+    _uploadedSig = pyqtSignal(str)
+    _syncedSig = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -106,7 +152,11 @@ class PlayerBackend(QObject):
         self.playlists_service = PlaylistsService(self.db_conn)
         self.track_model = TrackModel(self.db_conn, self.favorites)
         self.album_model = AlbumModel(self.db_conn)
-        self.artist_model = ArtistModel(self.db_conn)
+        self.artist_model = ArtistModel(self.db_conn, self.settings.value("artistPhotos", True, type=bool))
+        self.photo_thread = None
+        self.lab_thread = None
+        self.lab_player = None
+        self.lab_dir = None
         self.playlist_model = PlaylistModel(self.db_conn)
 
         self.queue_model = QueueModel()
@@ -128,6 +178,8 @@ class PlayerBackend(QObject):
         self._playingSig.connect(self._on_playing)
         self._endedSig.connect(self._on_track_ended)
         self._autoAdvanceSig.connect(self._on_auto_advanced)
+        self._uploadedSig.connect(self._on_uploaded)
+        self._syncedSig.connect(self._on_synced)
         self._planned = None  # (índice, usa_pendiente) de la pista precargada
 
         self.audio = AudioPlayer(
@@ -150,6 +202,10 @@ class PlayerBackend(QObject):
         self._sleep_timer = QTimer(self)
         self._sleep_timer.setInterval(1000)
         self._sleep_timer.timeout.connect(self._sleep_tick)
+        self._upload_scan_timer = QTimer(self)
+        self._upload_scan_timer.setSingleShot(True)
+        self._upload_scan_timer.setInterval(2000)
+        self._upload_scan_timer.timeout.connect(self._upload_scan)
 
         self.control = ThreadedController(PlayerController(self))
         self.server = None
@@ -204,6 +260,19 @@ class PlayerBackend(QObject):
         self.album_model.reload()
         self.artist_model.reload()
         self.playlist_model.reload()
+        self._fetch_artist_photos()
+
+    def _fetch_artist_photos(self):
+        if not self.artist_model.use_photos:
+            return
+        if self.photo_thread is not None and self.photo_thread.isRunning():
+            return
+        names = self.artist_model.missing_photos()
+        if not names:
+            return
+        self.photo_thread = ArtistPhotoThread(names)
+        self.photo_thread.photo.connect(self.artist_model.photo_ready)
+        self.photo_thread.start()
 
     @pyqtSlot(str)
     def setQuery(self, query):
@@ -413,7 +482,7 @@ class PlayerBackend(QObject):
                 "last_played = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = ?", (track_id,))
             self.db_conn.commit()
         except Exception as e:
-            print(f"Error registrando la reproducción: {e}")
+            logger.warning("Error registrando la reproducción", exc_info=True)
 
     @pyqtSlot(int)
     def playIndex(self, i):
@@ -583,15 +652,58 @@ class PlayerBackend(QObject):
         try:
             cert, key = tls.ensure_certificate(DB_DIR / "tls")
             self.server_fingerprint = tls.fingerprint(cert)
-            self.server = LidiaServer(self.control, init_db, host, port, tls.server_context(cert, key))
+            self.server = LidiaServer(self.control, init_db, host, port, tls.server_context(cert, key),
+                                      upload_dir=self._upload_dir(), on_upload=self._uploadedSig.emit,
+                                      limits=self._server_limits(), on_sync=self._syncedSig.emit)
             self.server.start()
         except (OSError, ssl.SSLError) as e:
             self.server = None
-            print(f"No se pudo iniciar el servidor en {host}:{port}: {e}")
+            logger.error("No se pudo iniciar el servidor en %s:%s: %s", host, port, e)
             return
         if lan:
             self.announcer = Announcer(f"Lidia en {socket.gethostname()}", _local_ip(), port)
             self.announcer.start()
+
+    def _server_limits(self):
+        s = self.settings
+        return Limits(
+            allow_downloads=s.value("server/allowDownloads", True, type=bool),
+            allow_uploads=s.value("server/allowUploads", False, type=bool),
+            requests_per_minute=s.value("server/requestsPerMinute", 600, type=int),
+            max_upload_mb=s.value("server/maxUploadMb", 1024, type=int),
+            upload_quota_gb=s.value("server/uploadQuotaGb", 20, type=int),
+            download_gb_per_day=s.value("server/downloadGbPerDay", 0, type=int))
+
+    @pyqtSlot(int)
+    def setRequestsPerMinute(self, value):
+        value = max(0, min(6000, int(value)))
+        self.settings.setValue("server/requestsPerMinute", value)
+        if self.server is not None:
+            self.server.limits.requests_per_minute = value
+
+    @staticmethod
+    def _upload_dir():
+        music = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MusicLocation)
+        return str(Path(music or Path.home()) / "Lidia")
+
+    def _on_synced(self):
+        """Un cliente ha modificado favoritos/listas/reproducciones: refresca la interfaz."""
+        self.favorites_service.reload()
+        self.reload_models()
+
+    def _on_uploaded(self, path):
+        folder = self._upload_dir()
+        libs = self._libraries()
+        if folder not in libs:
+            libs.append(folder)
+            self.settings.setValue("libraries", libs)
+        self._upload_scan_timer.start()
+
+    def _upload_scan(self):
+        if self.scanner_thread is not None and self.scanner_thread.isRunning():
+            self._upload_scan_timer.start()
+            return
+        self._start_scan([self._upload_dir()])
 
     def _stop_server(self):
         if self.announcer is not None:
@@ -707,12 +819,17 @@ class PlayerBackend(QObject):
             'libraries': self._libraries(),
             'serverEnabled': self.settings.value("server/enabled", False, type=bool),
             'serverLan': self.settings.value("server/lan", False, type=bool),
+            'artistPhotos': s.value("artistPhotos", True, type=bool),
+            'allowDownloads': s.value("server/allowDownloads", True, type=bool),
+            'allowUploads': s.value("server/allowUploads", False, type=bool),
+            'requestsPerMinute': s.value("server/requestsPerMinute", 600, type=int),
             **self._server_info(),
         }
 
     @pyqtSlot(str, bool)
     def setSetting(self, key, value):
-        if key not in ("replayGain", "gapless", "closeToTray", "darkMode", "serverEnabled", "serverLan"):
+        if key not in ("replayGain", "gapless", "closeToTray", "darkMode", "serverEnabled", "serverLan", "artistPhotos",
+                       "allowDownloads", "allowUploads"):
             return
         if key in ("serverEnabled", "serverLan"):
             self.settings.setValue("server/enabled" if key == "serverEnabled" else "server/lan", value)
@@ -720,8 +837,17 @@ class PlayerBackend(QObject):
             if self.settings.value("server/enabled", False, type=bool):
                 self._start_server()
             return
+        if key in ("allowDownloads", "allowUploads"):
+            self.settings.setValue("server/" + key, value)
+            if self.server is not None:
+                setattr(self.server.limits, "allow_downloads" if key == "allowDownloads" else "allow_uploads", value)
+            return
         self.settings.setValue(key, value)
-        if key == "replayGain":
+        if key == "artistPhotos":
+            self.artist_model.use_photos = value
+            self.artist_model.reload()
+            self._fetch_artist_photos()
+        elif key == "replayGain":
             self.audio.set_replaygain(value)
         elif key == "gapless":
             self._replan()
@@ -927,6 +1053,20 @@ class PlayerBackend(QObject):
         """Guarda cola, pista actual y posición para retomar al abrir."""
         self.session.save([t['path'] for t in self.queue], self.index, self._time,
                           self.shuffle, self.repeat)
+        self._publish_resume()
+
+    def _publish_resume(self):
+        """Mientras suena algo, deja «seguir escuchando» disponible para otros dispositivos."""
+        player = self.audio.player
+        if not (0 <= self.index < len(self.queue)) or player.path is None or player.pause:
+            return
+        uid = self.queue[self.index].get('uid')
+        if uid:
+            try:
+                sync.set_resume(self.db_conn, {"uid": uid, "position": float(self._time),
+                                               "at": sync.now_iso(), "device": socket.gethostname()})
+            except Exception as e:
+                logger.warning("Error guardando la posición de escucha", exc_info=True)
 
     @pyqtSlot()
     def restore_session(self):
@@ -958,12 +1098,105 @@ class PlayerBackend(QObject):
             self.audio.play(t['path'], start=pos, paused=True)
             self._replan()
 
+    # ------------------------------------------------------------ laboratorio de audio
+
+    def _lab_start(self, kind, fn):
+        if self.lab_thread is not None and self.lab_thread.isRunning():
+            self.labFailed.emit("Espera a que termine la operación en curso")
+            return
+        t = self.lab_thread = LabThread(kind, fn, self)
+        t.done.connect(self._lab_done)
+        t.failed.connect(self._lab_failed)
+        t.finished.connect(lambda: self.labBusyChanged.emit(False))
+        self.labBusyChanged.emit(True)
+        t.start()
+
+    def _lab_failed(self, text):
+        self.labFailed.emit(text)
+
+    def _lab_done(self, kind, result):
+        if kind == "analyze":
+            self.labAnalyzed.emit(*result)
+        elif kind == "preview":
+            self.labPreviewReady.emit(*result)
+        else:
+            self.labExported.emit(result)
+
+    @pyqtSlot(result=str)
+    def labPickFile(self):
+        start = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MusicLocation)
+        path, _ = QFileDialog.getOpenFileName(
+            None, "Selecciona un archivo de audio", start,
+            "Audio (*.wav *.flac *.mp3 *.ogg *.opus *.m4a *.aac *.wma *.aiff *.ape);;Todos (*)")
+        return path
+
+    @pyqtSlot(str)
+    def labAnalyze(self, path):
+        self.labStop()
+        self._lab_start("analyze", lambda: (audiolab.analyze(path), audiolab.waveform(path)))
+
+    @pyqtSlot(str, float, int, bool)
+    def labPreview(self, path, sample_rate, bits, original):
+        if self.lab_dir is None:
+            self.lab_dir = tempfile.mkdtemp(prefix="lidia_lab_")
+        out = os.path.join(self.lab_dir, "original.wav" if original else "procesado.wav")
+        self.labStop()
+        self._lab_start("preview", lambda: (out, audiolab.make_preview(path, out, sample_rate, bits, original)))
+
+    @pyqtSlot(str)
+    def labPlay(self, path):
+        if not path or not os.path.isfile(path):
+            return
+        import mpv
+        self.audio.set_pause(True)
+        if self.lab_player is None:
+            self.lab_player = mpv.MPV(video=False, ytdl=False, audio_display="no")
+        self.lab_player.play(path)
+        self.lab_player.pause = False
+
+    @pyqtSlot()
+    def labStop(self):
+        if self.lab_player is not None:
+            try:
+                self.lab_player.stop()
+            except Exception:
+                pass
+
+    @pyqtSlot(str, float, int, str, int, result=bool)
+    def labExport(self, path, sample_rate, bits, fmt, bitrate):
+        stem = os.path.splitext(os.path.basename(path))[0]
+        suggested = os.path.join(os.path.dirname(path), f"{stem}_{int(sample_rate)}Hz_{bits}bit.{fmt}")
+        out, _ = QFileDialog.getSaveFileName(None, "Guardar archivo exportado", suggested,
+                                             f"{fmt.upper()} (*.{fmt})")
+        if not out:
+            return False
+        if not out.lower().endswith("." + fmt):
+            out += "." + fmt
+
+        def job():
+            real_sr, size = audiolab.export_file(path, out, sample_rate, bits, fmt, bitrate)
+            note = f" (ajustado a {real_sr} Hz por el formato)" if real_sr != int(round(sample_rate)) else ""
+            return f"Exportado: {os.path.basename(out)} · {size / 1024:.0f} KB{note}"
+
+        self._lab_start("export", job)
+        return True
+
     def shutdown(self):
+        self.labStop()
+        if self.lab_thread is not None and self.lab_thread.isRunning():
+            self.lab_thread.wait(10000)
+        if self.lab_player is not None:
+            self.lab_player.terminate()
+        if self.lab_dir:
+            shutil.rmtree(self.lab_dir, ignore_errors=True)
         self._stop_server()
         self.save_session()
         if self.scanner_thread is not None and self.scanner_thread.isRunning():
             self.scanner_thread.requestInterruption()
             self.scanner_thread.wait(5000)
+        if self.photo_thread is not None and self.photo_thread.isRunning():
+            self.photo_thread.requestInterruption()
+            self.photo_thread.wait(12000)
         if self.mpris:
             self.mpris.stop()
         self.audio.terminate()

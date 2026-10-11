@@ -214,6 +214,7 @@ ApplicationWindow {
         id: sidebar
         root: root
         settingsPopup: settingsPopup
+        audioLabPopup: audioLabPopup
         anchors.bottom: playerBar.top
     }
 
@@ -348,6 +349,9 @@ ApplicationWindow {
             settingsPopup.setValues(backend.getSettings());
         }
         onRefreshRequested: settingsPopup.setValues(backend.getSettings())
+        onRequestsChanged: function(value) {
+            backend.setRequestsPerMinute(value);
+        }
         onCrossfadeChanged: function(seconds) {
             backend.setCrossfade(seconds);
         }
@@ -359,6 +363,11 @@ ApplicationWindow {
             backend.openFolderDialog();
             settingsPopup.setValues(backend.getSettings());
         }
+    }
+
+    AudioLabPopup {
+        id: audioLabPopup
+        currentTrackPath: root.currentPath
     }
 
     EqualizerPopup {

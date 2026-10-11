@@ -3,6 +3,11 @@ class FavoritesService:
         self.conn = conn
         self.ids = {r[0] for r in conn.execute("SELECT track_id FROM favorites")}
 
+    def reload(self):
+        """Relee los ids desde la BD conservando el mismo objeto `set` compartido."""
+        self.ids.clear()
+        self.ids.update(r[0] for r in self.conn.execute("SELECT track_id FROM favorites"))
+
     def is_favorite(self, track_id):
         return track_id in self.ids
 

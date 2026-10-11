@@ -7,6 +7,7 @@ Item {
     property var searchInput
     property var addMenu
     property var editTagsPopup
+    readonly property int qualityW: 96
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -33,7 +34,7 @@ Item {
                     font.bold: true
                 }
                 Text {
-                    width: parent.width - 44 - 70 - 40 - (root.wide ? 240 : 0)
+                    width: parent.width - 44 - 70 - 40 - qualityW - (root.wide ? 240 : 0)
                     height: parent.height
                     leftPadding: 66
                     verticalAlignment: Text.AlignVCenter
@@ -61,6 +62,16 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: Text.AlignRight
                     text: "DURACIÓN"
+                    color: Theme.textTertiary
+                    font.pixelSize: 11
+                    font.bold: true
+                }
+                Text {
+                    width: qualityW
+                    height: parent.height
+                    verticalAlignment: Text.AlignVCenter
+                    horizontalAlignment: Text.AlignRight
+                    text: "CALIDAD"
                     color: Theme.textTertiary
                     font.pixelSize: 11
                     font.bold: true
@@ -97,6 +108,8 @@ Item {
                 required property string path
                 required property string cover
                 required property int duration
+                required property int bitrate
+                required property string format
                 required property bool favorite
                 readonly property bool isCurrent: root.currentPath === row.path
                 readonly property bool hovered: rowHover.hovered
@@ -148,7 +161,7 @@ Item {
 
                     // Portada + título/artista
                     Item {
-                        width: parent.width - 44 - 70 - 40 - (root.wide ? 240 : 0)
+                        width: parent.width - 44 - 70 - 40 - qualityW - (root.wide ? 240 : 0)
                         height: parent.height
 
                         CoverArt {
@@ -228,6 +241,30 @@ Item {
                             font.pixelSize: 13
                         }
                     }
+
+                    Item {
+                        width: qualityW
+                        height: parent.height
+                        Column {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 2
+                            Text {
+                                anchors.right: parent.right
+                                text: row.format
+                                color: Theme.textSecondary
+                                font.pixelSize: 12
+                                font.bold: true
+                            }
+                            Text {
+                                anchors.right: parent.right
+                                visible: row.bitrate > 0
+                                text: row.bitrate + " kbps"
+                                color: Theme.textTertiary
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
                 }
 
                 MouseArea {
@@ -247,7 +284,7 @@ Item {
                 Rectangle {
                     visible: row.hovered
                     anchors.right: parent.right
-                    anchors.rightMargin: 28 + 70 + 40 + (root.wide ? 240 : 0) + 6
+                    anchors.rightMargin: 28 + 70 + 40 + qualityW + (root.wide ? 240 : 0) + 6
                     anchors.verticalCenter: parent.verticalCenter
                     width: actionsRow.width + 10
                     height: 36

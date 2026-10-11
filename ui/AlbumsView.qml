@@ -37,8 +37,7 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 6
                 radius: 14
-                color: cardMouse.containsMouse ? Theme.elevated : "transparent"
-                Behavior on color { ColorAnimation { duration: 140 } }
+                color: cardHover.hovered ? Theme.elevated : "transparent"
             }
 
             Column {
@@ -66,9 +65,7 @@ Item {
                         iconSize: 18
                         filled: true
                         icon: "play"
-                        opacity: cardMouse.containsMouse ? 1 : 0
-                        y: cardMouse.containsMouse ? 0 : 6
-                        Behavior on opacity { NumberAnimation { duration: 160 } }
+                        visible: cardHover.hovered
                         onClicked: backend.playAlbum(card.albumId)
                     }
                 }
@@ -94,14 +91,12 @@ Item {
                 }
             }
 
-            // Debajo del botón de play para que éste reciba sus clics
-            MouseArea {
-                id: cardMouse
-                anchors.fill: parent
-                hoverEnabled: true
+            HoverHandler {
+                id: cardHover
                 cursorShape: Qt.PointingHandCursor
-                z: -1
-                onClicked: root.openAlbum(card.albumId, card.title, card.artist)
+            }
+            TapHandler {
+                onTapped: root.openAlbum(card.albumId, card.title, card.artist)
             }
         }
     }

@@ -4,9 +4,10 @@ import QtQuick.Layouts
 
 Popup {
     id: popup
-    property var values: ({darkMode: true, replayGain: true, gapless: true, crossfade: 0, closeToTray: true, trayAvailable: false, libraries: [], serverEnabled: false, serverLan: false, serverRunning: false, serverPin: "", serverAddress: "", serverFingerprint: ""})
+    property var values: ({darkMode: true, replayGain: true, gapless: true, crossfade: 0, closeToTray: true, trayAvailable: false, libraries: [], serverEnabled: false, serverLan: false, serverRunning: false, serverPin: "", serverAddress: "", serverFingerprint: "", artistPhotos: true, allowDownloads: true, allowUploads: false, requestsPerMinute: 600})
     signal settingChanged(string key, bool value)
     signal crossfadeChanged(int seconds)
+    signal requestsChanged(int value)
     signal removeLibraryRequested(string folder)
     signal addLibraryRequested()
     signal refreshRequested()
@@ -15,6 +16,8 @@ Popup {
     focus: true
     anchors.centerIn: Overlay.overlay
     width: 460
+    height: Math.min(settingsColumn.implicitHeight + topPadding + bottomPadding,
+                     (Overlay.overlay ? Overlay.overlay.height : 800) - 64)
     padding: 22
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
@@ -49,6 +52,8 @@ Popup {
             Layout.fillWidth: true
             spacing: 2
             Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 text: opt.title
                 color: Theme.text
                 font.pixelSize: 14
@@ -68,7 +73,17 @@ Popup {
         }
     }
 
-    contentItem: ColumnLayout {
+    contentItem: Flickable {
+        id: flick
+        clip: true
+        contentWidth: width
+        contentHeight: settingsColumn.implicitHeight
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: StyledScrollBar {}
+
+    ColumnLayout {
+        id: settingsColumn
+        width: flick.width - (flick.contentHeight > flick.height ? 14 : 0)
         spacing: 14
 
         Text {
@@ -97,6 +112,8 @@ Popup {
                 Layout.fillWidth: true
                 spacing: 2
                 Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
                     text: "Crossfade: " + (xfSlider.value === 0 ? "desactivado" : xfSlider.value + " s")
                     color: Theme.text
                     font.pixelSize: 14
@@ -117,6 +134,8 @@ Popup {
                 stepSize: 1
                 snapMode: Slider.SnapAlways
                 Layout.preferredWidth: 140
+                Layout.maximumWidth: 140
+                Layout.alignment: Qt.AlignVCenter
                 value: popup.values.crossfade
                 onMoved: popup.crossfadeChanged(Math.round(value))
             }
@@ -126,6 +145,12 @@ Popup {
             hint: "Iguala el volumen entre álbumes si los archivos traen la etiqueta."
             checked: popup.values.replayGain
             onToggled: function(v) { popup.settingChanged("replayGain", v) }
+        }
+        Option {
+            title: "Fotos de artistas"
+            hint: "Descarga la foto de cada artista de Deezer (se envía su nombre). Desactivado, se usa una portada de su álbum."
+            checked: popup.values.artistPhotos
+            onToggled: function(v) { popup.settingChanged("artistPhotos", v) }
         }
         Option {
             visible: popup.values.trayAvailable
@@ -150,14 +175,92 @@ Popup {
             checked: popup.values.serverLan
             onToggled: function(v) { popup.settingChanged("serverLan", v) }
         }
-        Text {
+        Option {
+            visible: popup.values.serverEnabled
+            title: "Permitir descargas"
+            hint: "Los dispositivos emparejados pueden descargar canciones, álbumes o la biblioteca entera."
+            checked: popup.values.allowDownloads
+            onToggled: function(v) { popup.settingChanged("allowDownloads", v) }
+        }
+        Option {
+            visible: popup.values.serverEnabled
+            title: "Permitir subidas"
+            hint: "Los dispositivos emparejados pueden subir música a la carpeta Música/Lidia (máx. 1 GB por archivo y 20 GB en total)."
+            checked: popup.values.allowUploads
+            onToggled: function(v) { popup.settingChanged("allowUploads", v) }
+        }
+        RowLayout {
+            visible: popup.values.serverEnabled
+            Layout.fillWidth: true
+            spacing: 12
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 2
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    text: "Peticiones por minuto: " + (reqSlider.value === 0 ? "sin límite" : reqSlider.value)
+                    color: Theme.text
+                    font.pixelSize: 14
+                    font.bold: true
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "Por dispositivo. Al superarlo, recibe un aviso y debe esperar."
+                    color: Theme.textSecondary
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+            }
+            Slider {
+                id: reqSlider
+                from: 0
+                to: 1800
+                stepSize: 60
+                snapMode: Slider.SnapAlways
+                Layout.preferredWidth: 140
+                Layout.maximumWidth: 140
+                Layout.alignment: Qt.AlignVCenter
+                value: popup.values.requestsPerMinute
+                onMoved: popup.requestsChanged(Math.round(value))
+            }
+        }
+        ColumnLayout {
             visible: popup.values.serverRunning
             Layout.fillWidth: true
-            text: "Dirección: https://" + popup.values.serverAddress + "     PIN de emparejamiento: " + popup.values.serverPin
-                  + "\nHuella del certificado (SHA-256), compárala en el otro dispositivo al emparejar:\n" + popup.values.serverFingerprint
-            color: Theme.textSecondary
-            font.pixelSize: 13
-            wrapMode: Text.WordWrap
+            spacing: 4
+            Text {
+                Layout.fillWidth: true
+                text: "Dirección: https://" + popup.values.serverAddress
+                color: Theme.textSecondary
+                font.pixelSize: 13
+                wrapMode: Text.WrapAnywhere
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "PIN de emparejamiento: " + popup.values.serverPin
+                color: Theme.textSecondary
+                font.pixelSize: 13
+                wrapMode: Text.WrapAnywhere
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "Huella del certificado (SHA-256), compárala en el otro dispositivo al emparejar:"
+                color: Theme.textSecondary
+                font.pixelSize: 13
+                wrapMode: Text.WordWrap
+            }
+            TextEdit {
+                Layout.fillWidth: true
+                readOnly: true
+                selectByMouse: true
+                text: (popup.values.serverFingerprint.match(/(?:[0-9A-Fa-f]{2}:?){1,16}/g) || []).join("\n")
+                color: Theme.textSecondary
+                selectionColor: Theme.accent
+                font.pixelSize: 12
+                font.family: "monospace"
+                wrapMode: TextEdit.WrapAnywhere
+            }
         }
         Text {
             visible: popup.values.serverEnabled && !popup.values.serverRunning
@@ -213,5 +316,6 @@ Popup {
                 onClicked: popup.close()
             }
         }
+    }
     }
 }

@@ -1,9 +1,10 @@
+#!/usr/bin/env xdg-open
 [Desktop Entry]
 Type=Application
 Name=Lidia
-Comment=Reproductor de música local
-Exec=python3 /home/jdavid/Documentos/Lidia/main.py
-Icon=/home/jdavid/Documentos/Lidia/ui/logo-256.png
+Comment=Reproductor de música local con servidor integrado
+Exec=python3 /home/jdavid/Documentos/Reproductor/Lidia/main.py
+Icon=/home/jdavid/Documentos/Reproductor/Lidia/ui/logo-256.png
 Terminal=false
 Categories=AudioVideo;Audio;Player;
 StartupWMClass=lidia

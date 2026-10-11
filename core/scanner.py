@@ -7,12 +7,14 @@ from pathlib import Path
 import mutagen
 from mutagen.flac import Picture
 
+from core.logger import logger
+
 SUPPORTED_EXTENSIONS = {'.flac', '.mp3', '.m4a', '.ogg', '.opus', '.wav'}
 COVERS_DIR = Path.home() / ".cache" / "lidia" / "covers"
 FOLDER_COVER_NAMES = ("cover", "folder", "front", "album", "artwork")
 FOLDER_COVER_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 UNKNOWN = "Desconocido"
-SCAN_VERSION = 2  # sube para forzar el reprocesado de todos los archivos
+SCAN_VERSION = 3  # sube para forzar el reprocesado de todos los archivos
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
 _PHONE_BLOB_RE = re.compile(r"\+?[\d\s\-()]{7,}")
@@ -96,7 +98,7 @@ def extract_cover(file_path):
             cover_path.write_bytes(data)
         return str(cover_path)
     except Exception as e:
-        print(f"Error extrayendo carátula de {file_path}: {e}")
+        logger.warning("Error extrayendo carátula de %s", file_path, exc_info=True)
         return None
 
 
@@ -142,6 +144,21 @@ def _artist_id(name, cursor, cache):
     return cache[name]
 
 
+def _audio_quality(audio, file_path, duration):
+    """Devuelve (bitrate en kbps, formato) del archivo."""
+    info = getattr(audio, 'info', None)
+    fmt = os.path.splitext(file_path)[1].lstrip('.').upper()
+    if getattr(info, 'codec', '') == 'alac':
+        fmt = 'ALAC'
+    bitrate = int(getattr(info, 'bitrate', 0) or 0)
+    if bitrate <= 0 and duration > 0:
+        try:
+            bitrate = int(os.path.getsize(file_path) * 8 / duration)
+        except OSError:
+            bitrate = 0
+    return round(bitrate / 1000), fmt
+
+
 def scan_file(file_path, cursor, artist_cache, root=None, folder_cover=None):
     """Lee los metadatos de un único archivo y actualiza la BD (pista, artista, álbum)."""
     root = root or os.path.dirname(file_path)
@@ -160,6 +177,7 @@ def scan_file(file_path, cursor, artist_cache, root=None, folder_cover=None):
             album_title = _clean(os.path.basename(root), UNKNOWN)
         track_number = _parse_int(_first(tags, 'tracknumber', '0'))
         duration = int(audio.info.length) if getattr(audio, 'info', None) else 0
+        bitrate, fmt = _audio_quality(audio, file_path, duration)
 
         artist_id = _artist_id(artist_name, cursor, artist_cache)
         album_artist_id = _artist_id(album_artist, cursor, artist_cache)
@@ -184,20 +202,22 @@ def scan_file(file_path, cursor, artist_cache, root=None, folder_cover=None):
                                (new_cover, album_id))
 
         cursor.execute("""
-            INSERT INTO tracks (path, title, track_number, duration, mtime, album_id, artist_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tracks (path, title, track_number, duration, mtime, album_id, artist_id, bitrate, format)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 title=excluded.title,
                 track_number=excluded.track_number,
                 duration=excluded.duration,
                 mtime=excluded.mtime,
                 album_id=excluded.album_id,
-                artist_id=excluded.artist_id
+                artist_id=excluded.artist_id,
+                bitrate=excluded.bitrate,
+                format=excluded.format
         """, (file_path, title, track_number, duration, os.path.getmtime(file_path),
-              album_id, artist_id))
+              album_id, artist_id, bitrate, fmt))
         return True
     except Exception as e:
-        print(f"Error procesando {file_path}: {e}")
+        logger.warning("Error procesando %s", file_path, exc_info=True)
         return False
 
 

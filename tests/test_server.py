@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import database
 from core.control import ControlError
-from core.server import LidiaServer, _parse_range
+from core.server import LidiaServer, Limits, RateLimiter, TransferMeter, _parse_range
 
 
 class FakeController:
@@ -55,6 +55,19 @@ def call(base, path, body=None, token=None, headers=None):
             return r.status, (json.loads(raw) if r.headers["Content-Type"].startswith("application/json") else raw), r.headers
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read() or b"{}"), e.headers
+
+
+def test_web_page_served_without_token_on_any_non_api_path(tmp_path):
+    server, ctl, base = start(tmp_path)
+    try:
+        for path in ("/", "/index.html", "/cualquier/ruta"):
+            status, body, headers = call(base, path)
+            assert status == 200 and b"id=\"pin\"" in body
+            assert headers["Content-Type"].startswith("text/html")
+        assert call(base, "/api/status")[0] == 401
+        assert call(base, "/api/desconocida")[0] == 401
+    finally:
+        server.stop()
 
 
 def test_auth_pairing_and_commands(tmp_path):
@@ -161,5 +174,139 @@ def test_https_with_pinned_fingerprint(tmp_path):
                 assert b"200 OK" not in raw.recv(4096)
             except OSError:
                 pass
+    finally:
+        server.stop()
+
+
+def _pair(server, base):
+    return call(base, "/api/pair", {"pin": server.pairing.pin})[1]["token"]
+
+
+def test_download_zip_and_single(tmp_path):
+    import io
+    import zipfile
+    server, _, base = start(tmp_path)
+    try:
+        token = _pair(server, base)
+        assert call(base, "/api/download?all=1")[0] == 401
+        status, data, headers = call(base, "/api/download?all=1&token=" + token)
+        assert status == 200 and headers["Content-Type"] == "application/zip"
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            assert zf.testzip() is None
+            assert zf.namelist() == ["Art/Desconocido/a.mp3"]
+            assert zf.read("Art/Desconocido/a.mp3") == bytes(range(256)) * 4
+        status, data, headers = call(base, "/api/download?ids=1&token=" + token)
+        assert status == 200 and data == bytes(range(256)) * 4
+        assert "attachment" in headers["Content-Disposition"]
+        assert call(base, "/api/download?ids=x&token=" + token)[0] == 400
+        assert call(base, "/api/download?ids=99&token=" + token)[0] == 404
+        status, data, _ = call(base, "/api/albums", token=token)
+        assert status == 200 and data == {"albums": []}
+    finally:
+        server.stop()
+
+
+def test_upload(tmp_path):
+    uploaded = []
+    database.DB_DIR = tmp_path
+    database.DB_PATH = tmp_path / "library.db"
+    database.init_db().close()
+    dest = tmp_path / "up"
+    server = LidiaServer(FakeController(), database.init_db, upload_dir=str(dest), on_upload=uploaded.append,
+                         limits=Limits(allow_uploads=True))
+    server.start()
+    host, port = server.address
+    base = f"http://{host}:{port}"
+    try:
+        token = _pair(server, base)
+        def up(name, payload, tok=token):
+            req = urllib.request.Request(base + "/api/upload?name=" + name, data=payload,
+                                         headers={"Authorization": f"Bearer {tok}"} if tok else {})
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read() or b"{}")
+        assert up("x.mp3", b"abc", None)[0] == 401
+        assert up("x.exe", b"abc")[0] == 400
+        assert up("x.mp3", b"abc") == (200, {"saved": "x.mp3"})
+        assert up("x.mp3", b"def") == (200, {"saved": "x (2).mp3"})
+        assert up("..%2F..%2Fevil.mp3", b"z") == (200, {"saved": "evil.mp3"})
+        assert (dest / "x.mp3").read_bytes() == b"abc"
+        assert (dest / "evil.mp3").exists() and not (tmp_path / "evil.mp3").exists()
+        assert len(uploaded) == 3
+    finally:
+        server.stop()
+
+
+def test_rate_limiter_window():
+    now = [0.0]
+    rl = RateLimiter(clock=lambda: now[0])
+    assert all(rl.allow("a", 3) for _ in range(3))
+    assert not rl.allow("a", 3)
+    assert rl.allow("b", 3)
+    now[0] = 61
+    assert rl.allow("a", 3)
+    assert all(rl.allow("a", 0) for _ in range(50))
+
+
+def test_transfer_meter_window():
+    now = [0.0]
+    m = TransferMeter(clock=lambda: now[0])
+    m.add("a", 100)
+    m.add("a", 50)
+    assert m.used("a") == 150 and m.used("b") == 0
+    now[0] = 86401
+    assert m.used("a") == 0
+
+
+def test_server_limits(tmp_path):
+    server, _, base = start(tmp_path)
+    try:
+        token = _pair(server, base)
+        server.limits.allow_uploads = False
+        req = urllib.request.Request(base + "/api/upload?name=x.mp3", data=b"abc",
+                                     headers={"Authorization": f"Bearer {token}"})
+        try:
+            urllib.request.urlopen(req)
+            assert False
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+        server.limits.allow_downloads = False
+        assert call(base, "/api/download?ids=1&token=" + token)[0] == 403
+        server.limits.allow_downloads = True
+        server.limits.download_gb_per_day = 1
+        assert call(base, "/api/download?ids=1&token=" + token)[0] == 200
+        server._httpd.meter.add(next(iter(server._httpd.meter._data)), 2 * 1024 ** 3)
+        assert call(base, "/api/download?ids=1&token=" + token)[0] == 429
+        server._httpd.limiter = RateLimiter()
+        server.limits.requests_per_minute = 2
+        codes = [call(base, "/api/status", token=token)[0] for _ in range(4)]
+        assert 429 in codes and codes[0] == 200
+    finally:
+        server.stop()
+
+
+def test_upload_size_and_quota(tmp_path):
+    database.DB_DIR = tmp_path
+    database.DB_PATH = tmp_path / "library.db"
+    database.init_db().close()
+    dest = tmp_path / "up"
+    server = LidiaServer(FakeController(), database.init_db, upload_dir=str(dest),
+                         limits=Limits(allow_uploads=True, max_upload_mb=1, upload_quota_gb=0))
+    server.start()
+    host, port = server.address
+    base = f"http://{host}:{port}"
+    try:
+        token = _pair(server, base)
+        def up(payload):
+            req = urllib.request.Request(base + "/api/upload?name=big.mp3", data=payload,
+                                         headers={"Authorization": f"Bearer {token}"})
+            try:
+                return urllib.request.urlopen(req).status
+            except urllib.error.HTTPError as e:
+                return e.code
+        assert up(b"x" * (1024 * 1024 + 1)) == 413
+        assert up(b"x" * 100) == 200
     finally:
         server.stop()

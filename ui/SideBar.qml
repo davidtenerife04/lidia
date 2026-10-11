@@ -5,6 +5,7 @@ import QtQuick.Layouts
 Rectangle {
     property var root
     property var settingsPopup
+    property var audioLabPopup
     id: sidebar
     clip: true
     anchors.left: parent.left
@@ -282,6 +283,21 @@ Rectangle {
             enabled: !root.scanning
             opacity: enabled ? 1 : 0.5
             onClicked: backend.rescan()
+        }
+        IconButton {
+            visible: sidebar.compact
+            Layout.alignment: Qt.AlignHCenter
+            icon: "equalizer"
+            iconSize: 18
+            tip: "Laboratorio de audio"
+            onClicked: audioLabPopup.open()
+        }
+        PillButton {
+            visible: !sidebar.compact
+            Layout.fillWidth: true
+            icon: "equalizer"
+            text: "Laboratorio"
+            onClicked: audioLabPopup.open()
         }
         IconButton {
             visible: sidebar.compact

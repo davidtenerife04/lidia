@@ -9,6 +9,8 @@ Las órdenes llegan al hilo principal mediante señales de Qt.
 import threading
 from queue import Empty, Queue
 
+from core.logger import logger
+
 from PyQt6.QtCore import QObject, pyqtSignal
 
 BUS_NAME = "org.mpris.MediaPlayer2.reproductor"
@@ -108,20 +110,20 @@ class MprisService(QObject):
             from jeepney.bus_messages import MatchRule, message_bus
             from jeepney.io.threading import DBusRouter, open_dbus_connection
         except ImportError:
-            print("MPRIS desactivado: instala jeepney (pip install jeepney)")
+            logger.info("MPRIS desactivado: instala jeepney (pip install jeepney)")
             return
         try:
             router = DBusRouter(open_dbus_connection(bus="SESSION"))
             reply = router.send_and_get_reply(message_bus.RequestName(BUS_NAME))
             if reply.body and reply.body[0] not in (1, 4):  # PRIMARY_OWNER / ALREADY_OWNER
-                print("MPRIS: el nombre del bus ya está en uso")
+                logger.warning("MPRIS: el nombre del bus ya está en uso")
                 router.close()
                 return
             requests = Queue()
             router.filter(MatchRule(type="method_call", path=OBJ_PATH), queue=requests)
             self._router = router
         except Exception as e:
-            print(f"MPRIS desactivado: {e}")
+            logger.warning("MPRIS desactivado", exc_info=True)
             return
 
         while not self._stop.is_set():
@@ -132,7 +134,7 @@ class MprisService(QObject):
             try:
                 self._handle(msg)
             except Exception as e:
-                print(f"MPRIS: error atendiendo mensaje: {e}")
+                logger.warning("MPRIS: error atendiendo mensaje", exc_info=True)
 
     # ------------------------------------------------------------ propiedades
 
@@ -283,7 +285,7 @@ class MprisService(QObject):
             router.send(new_signal(emitter, "PropertiesChanged", "sa{sv}as",
                                    (IFACE_PLAYER, changed, [])))
         except Exception as e:
-            print(f"MPRIS: no se pudo emitir PropertiesChanged: {e}")
+            logger.warning("MPRIS: no se pudo emitir PropertiesChanged", exc_info=True)
 
     def set_track(self, track):
         with self._lock:

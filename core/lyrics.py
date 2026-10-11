@@ -1,6 +1,8 @@
 import os
 import re
 
+from core.logger import logger
+
 _LRC_RE = re.compile(r"\[(\d{1,2}):(\d{1,2}(?:\.\d+)?)\]")
 
 
@@ -29,5 +31,5 @@ def load_lyrics(track_path):
         with open(lrc, encoding="utf-8", errors="replace") as f:
             return parse_lrc(f.read())
     except OSError as e:
-        print(f"Error leyendo {lrc}: {e}")
+        logger.warning("Error leyendo %s", lrc, exc_info=True)
         return []

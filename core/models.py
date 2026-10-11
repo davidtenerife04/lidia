@@ -1,5 +1,6 @@
 import re
 
+from core.artist_images import cached_photo, is_resolved
 from PyQt6.QtCore import QAbstractListModel, QModelIndex, Qt, pyqtProperty, pyqtSignal
 
 UNKNOWN = "Desconocido"
@@ -88,7 +89,8 @@ def fetch_tracks(conn, query="", album_id=None, artist_id=None,
 
     sql = """
         SELECT tracks.id, tracks.title, artists.name, albums.title,
-               tracks.path, albums.cover_path, tracks.duration
+               tracks.path, albums.cover_path, tracks.duration,
+               tracks.bitrate, tracks.format, tracks.uid
         FROM tracks
         LEFT JOIN artists ON tracks.artist_id = artists.id
         LEFT JOIN albums ON tracks.album_id = albums.id
@@ -136,6 +138,9 @@ def _track_dict(r):
         'path': r[4],
         'cover': r[5] or "",
         'duration': r[6] or 0,
+        'bitrate': r[7] or 0,
+        'format': r[8] or "",
+        'uid': r[9] or "",
     }
 
 
@@ -145,7 +150,8 @@ def fetch_tracks_by_ids(conn, ids):
     for track_id in ids:
         row = conn.execute("""
             SELECT tracks.id, tracks.title, artists.name, albums.title,
-                   tracks.path, albums.cover_path, tracks.duration
+                   tracks.path, albums.cover_path, tracks.duration,
+               tracks.bitrate, tracks.format, tracks.uid
             FROM tracks
             LEFT JOIN artists ON tracks.artist_id = artists.id
             LEFT JOIN albums ON tracks.album_id = albums.id
@@ -161,7 +167,8 @@ def fetch_tracks_by_paths(conn, paths):
     for path in paths:
         row = conn.execute("""
             SELECT tracks.id, tracks.title, artists.name, albums.title,
-                   tracks.path, albums.cover_path, tracks.duration
+                   tracks.path, albums.cover_path, tracks.duration,
+               tracks.bitrate, tracks.format, tracks.uid
             FROM tracks
             LEFT JOIN artists ON tracks.artist_id = artists.id
             LEFT JOIN albums ON tracks.album_id = albums.id
@@ -179,10 +186,13 @@ class TrackModel(QAbstractListModel):
     CoverRole = Qt.ItemDataRole.UserRole + 5
     DurationRole = Qt.ItemDataRole.UserRole + 6
     FavoriteRole = Qt.ItemDataRole.UserRole + 7
+    BitrateRole = Qt.ItemDataRole.UserRole + 8
+    FormatRole = Qt.ItemDataRole.UserRole + 9
 
     _KEYS = {
         TitleRole: 'title', ArtistRole: 'artist', AlbumRole: 'album',
         PathRole: 'path', CoverRole: 'cover', DurationRole: 'duration',
+        BitrateRole: 'bitrate', FormatRole: 'format',
     }
 
     countChanged = pyqtSignal()
@@ -329,18 +339,21 @@ class ArtistModel(QAbstractListModel):
     NameRole = Qt.ItemDataRole.UserRole + 2
     AlbumCountRole = Qt.ItemDataRole.UserRole + 3
     TrackCountRole = Qt.ItemDataRole.UserRole + 4
+    ImageRole = Qt.ItemDataRole.UserRole + 5
 
     countChanged = pyqtSignal()
 
-    def __init__(self, db_conn):
+    def __init__(self, db_conn, use_photos=True):
         super().__init__()
         self.db_conn = db_conn
+        self.use_photos = use_photos
         self.artists = []
         self.query = ""
 
     def roleNames(self):
         return {self.IdRole: b'artistId', self.NameRole: b'name',
-                self.AlbumCountRole: b'albumCount', self.TrackCountRole: b'trackCount'}
+                self.AlbumCountRole: b'albumCount', self.TrackCountRole: b'trackCount',
+                self.ImageRole: b'image'}
 
     def rowCount(self, parent=None):
         return len(self.artists)
@@ -351,7 +364,8 @@ class ArtistModel(QAbstractListModel):
         a = self.artists[index.row()]
         return {self.IdRole: a['id'], self.NameRole: a['name'],
                 self.AlbumCountRole: a['albumCount'],
-                self.TrackCountRole: a['trackCount']}.get(role)
+                self.TrackCountRole: a['trackCount'],
+                self.ImageRole: a['image']}.get(role)
 
     @pyqtProperty(int, notify=countChanged)
     def count(self):
@@ -361,7 +375,10 @@ class ArtistModel(QAbstractListModel):
         where, params = _search_clause(self.query, ("artists.name",))
         sql = """
             SELECT artists.id, artists.name,
-                   COUNT(DISTINCT tracks.id), COUNT(DISTINCT albums.id)
+                   COUNT(DISTINCT tracks.id), COUNT(DISTINCT albums.id),
+                   (SELECT a2.cover_path FROM albums a2
+                    WHERE a2.artist_id = artists.id AND a2.cover_path IS NOT NULL
+                    ORDER BY a2.year DESC, a2.id LIMIT 1)
             FROM artists
             LEFT JOIN albums ON albums.artist_id = artists.id
             LEFT JOIN tracks ON tracks.artist_id = artists.id
@@ -378,9 +395,20 @@ class ArtistModel(QAbstractListModel):
         self.beginResetModel()
         self.artists = [{
             'id': r[0], 'name': r[1], 'trackCount': r[2], 'albumCount': r[3],
+            'image': (cached_photo(r[1]) if self.use_photos else "") or r[4] or "",
         } for r in rows]
         self.endResetModel()
         self.countChanged.emit()
+
+    def missing_photos(self):
+        return [a['name'] for a in self.artists if not is_resolved(a['name'])]
+
+    def photo_ready(self, name, path):
+        for row, a in enumerate(self.artists):
+            if a['name'] == name and a['image'] != path:
+                a['image'] = path
+                i = self.index(row)
+                self.dataChanged.emit(i, i, [self.ImageRole])
 
 
 class QueueModel(QAbstractListModel):

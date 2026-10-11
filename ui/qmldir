@@ -21,3 +21,4 @@ ArtistsView 1.0 ArtistsView.qml
 LyricsPanel 1.0 LyricsPanel.qml
 QueuePanel 1.0 QueuePanel.qml
 PlayerBar 1.0 PlayerBar.qml
+AudioLabPopup 1.0 AudioLabPopup.qml
